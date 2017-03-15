@@ -1,0 +1,286 @@
+diff --git a/release/scripts/startup/bl_ui/space_sequencer.py b/release/scripts/startup/bl_ui/space_sequencer.py
+index 64114b9..f622eef 100644
+--- a/release/scripts/startup/bl_ui/space_sequencer.py
++++ b/release/scripts/startup/bl_ui/space_sequencer.py
+@@ -377,6 +377,7 @@ class SEQUENCER_MT_add_effect(Menu):
+         layout.operator("sequencer.effect_strip_add", text="Speed Control").type = 'SPEED'
+         layout.operator("sequencer.effect_strip_add", text="Multicam Selector").type = 'MULTICAM'
+         layout.operator("sequencer.effect_strip_add", text="Adjustment Layer").type = 'ADJUSTMENT'
++        layout.operator("sequencer.effect_strip_add", text="Custom Effect").type = 'CUSTOM_EFFECT'
+ 
+ 
+ class SEQUENCER_MT_strip(Menu):
+@@ -572,7 +573,7 @@ class SEQUENCER_PT_effect(SequencerButtonsPanel, Panel):
+         return strip.type in {'ADD', 'SUBTRACT', 'ALPHA_OVER', 'ALPHA_UNDER',
+                               'CROSS', 'GAMMA_CROSS', 'MULTIPLY', 'OVER_DROP',
+                               'WIPE', 'GLOW', 'TRANSFORM', 'COLOR', 'SPEED',
+-                              'MULTICAM', 'GAUSSIAN_BLUR', 'TEXT'}
++                              'MULTICAM', 'GAUSSIAN_BLUR', 'TEXT', 'CUSTOM_EFFECT'}
+ 
+     def draw(self, context):
+         layout = self.layout
+@@ -729,7 +730,8 @@ class SEQUENCER_PT_effect(SequencerButtonsPanel, Panel):
+         elif strip.type == 'GAUSSIAN_BLUR':
+             col.prop(strip, "size_x")
+             col.prop(strip, "size_y")
+-
++        elif strip.type == 'CUSTOM_EFFECT':
++            col.prop(strip, 'property')
+ 
+ class SEQUENCER_PT_input(SequencerButtonsPanel, Panel):
+     bl_label = "Strip Input"
+diff --git a/source/blender/blenkernel/intern/seqeffects.c b/source/blender/blenkernel/intern/seqeffects.c
+index 8e0d4ad..ad62d85 100644
+--- a/source/blender/blenkernel/intern/seqeffects.c
++++ b/source/blender/blenkernel/intern/seqeffects.c
+@@ -3228,6 +3228,96 @@ static ImBuf *do_text_effect(const SeqRenderData *context, Sequence *seq, float
+     return out;
+ }
+ 
++/*********************** Custom Effect *************************/
++static void init_custom_effect_effect(Sequence *seq)
++{
++    if (seq->effectdata)
++        MEM_freeN(seq->effectdata);
++
++    seq->effectdata = MEM_callocN(sizeof(CustomEffectVars), "customeffectvars");
++}
++
++static int num_inputs_custom_effect(void)
++{
++    return 1;
++}
++
++static void free_custom_effect_effect(Sequence *seq)
++{
++    if (seq->effectdata)
++        MEM_freeN(seq->effectdata);
++
++    seq->effectdata = NULL;
++}
++
++static void copy_custom_effect_effect(Sequence *dst, Sequence *src)
++{
++    dst->effectdata = MEM_dupallocN(src->effectdata);
++}
++
++static int early_out_custom_effect(Sequence *seq, float UNUSED(facf0), float UNUSED(facf1))
++{
++
++    /* source/blender/blenkernel/BKE_sequencer.h */
++    /* #define EARLY_NO_INPUT      -1 */
++    /* #define EARLY_DO_EFFECT     0 */
++    /* #define EARLY_USE_INPUT_1   1 */
++    /* #define EARLY_USE_INPUT_2   2 */
++   
++    CustomEffectVars *UNUSED(data) = seq->effectdata;
++    /* I will always do my effect */
++    /* if (data->property == 0) { */
++    /*     return EARLY_USE_INPUT_1; */
++    /* } */
++    return EARLY_DO_EFFECT;
++}
++
++static ImBuf *do_custom_effect_effect(const SeqRenderData *context, Sequence *seq, float UNUSED(cfra), float UNUSED(facf0), float UNUSED(facf1),
++                                     ImBuf *ibuf1, ImBuf *ibuf2, ImBuf *ibuf3)
++{
++    ImBuf *out = prepare_effect_imbufs(context, ibuf1, ibuf2, ibuf3);
++
++    CustomEffectVars *cv = (CustomEffectVars *)seq->effectdata;
++
++    unsigned char *rect, *orig;
++    int x= context->rectx;
++    int y= context->recty;
++
++    float prop = cv->property;
++    if (out->rect) {
++        orig = (unsigned char *)ibuf1->rect;
++        rect = (unsigned char *)out->rect;
++        while (y--) {
++            x = context->rectx;
++            while (x--) {
++                rect[0] = (orig[0]+ prop*orig[1])/(1+prop);
++                rect[1] = (orig[1]+ prop*orig[2])/(1+prop);
++                rect[2] = (orig[2]+ prop*orig[1])/(1+prop);
++                rect[3] = 220;
++                rect += 4;
++                orig += 4;
++            }
++        }
++    }
++    else if (out->rect_float) {
++        orig = (unsigned char *)ibuf1->rect_float;
++        rect = (unsigned char *)out->rect_float;
++        while (y--) {
++            x = context->rectx;
++            while (x--) {
++                rect[0] = (orig[0]+ prop*orig[1])/(1+prop);
++                rect[1] = (orig[1]+ prop*orig[2])/(1+prop);
++                rect[2] = (orig[2]+ prop*orig[1])/(1+prop);
++                rect[3] = 0.5;
++                rect += 4;
++                orig += 4;
++               
++            }
++        }
++    }
++    return out;
++}
++
+ /*********************** sequence effect factory *************************/
+ 
+ static void init_noop(Sequence *UNUSED(seq))
+@@ -3429,6 +3519,14 @@ static struct SeqEffectHandle get_sequence_effect_impl(int seq_type)
+             rval.early_out = early_out_adjustment;
+             rval.execute = do_adjustment;
+             break;
++        case SEQ_TYPE_CUSTOMEFFECT:
++            rval.init = init_custom_effect_effect;
++            rval.num_inputs = num_inputs_custom_effect;
++            rval.free = free_custom_effect_effect;
++            rval.copy = copy_custom_effect_effect;
++            rval.early_out = early_out_custom_effect;
++            rval.execute = do_custom_effect_effect;
++            break;
+         case SEQ_TYPE_GAUSSIAN_BLUR:
+             rval.init = init_gaussian_blur_effect;
+             rval.num_inputs = num_inputs_gaussian_blur;
+diff --git a/source/blender/blenloader/intern/writefile.c b/source/blender/blenloader/intern/writefile.c
+index 01d07e0d..0546827 100644
+--- a/source/blender/blenloader/intern/writefile.c
++++ b/source/blender/blenloader/intern/writefile.c
+@@ -2682,6 +2682,9 @@ static void write_scenes(WriteData *wd, ListBase *scebase)
+                             case SEQ_TYPE_GAUSSIAN_BLUR:
+                                 writestruct(wd, DATA, GaussianBlurVars, 1, seq->effectdata);
+                                 break;
++                            case SEQ_TYPE_CUSTOMEFFECT:
++                                writestruct(wd, DATA, CustomEffectVars, 1, seq->effectdata);
++                                break;
+                             case SEQ_TYPE_TEXT:
+                                 writestruct(wd, DATA, TextVars, 1, seq->effectdata);
+                                 break;
+diff --git a/source/blender/editors/space_sequencer/sequencer_draw.c b/source/blender/editors/space_sequencer/sequencer_draw.c
+index 70a6e6d..6fbca19 100644
+--- a/source/blender/editors/space_sequencer/sequencer_draw.c
++++ b/source/blender/editors/space_sequencer/sequencer_draw.c
+@@ -154,6 +154,7 @@ void color3ubv_from_seq(Scene *curscene, Sequence *seq, unsigned char col[3])
+         case SEQ_TYPE_MULTICAM:
+         case SEQ_TYPE_ADJUSTMENT:
+         case SEQ_TYPE_GAUSSIAN_BLUR:
++        case SEQ_TYPE_CUSTOMEFFECT:
+             UI_GetThemeColor3ubv(TH_SEQ_EFFECT, col);
+ 
+             /* slightly offset hue to distinguish different effects */
+@@ -168,6 +169,7 @@ void color3ubv_from_seq(Scene *curscene, Sequence *seq, unsigned char col[3])
+             else if (seq->type == SEQ_TYPE_MULTICAM)      rgb_byte_set_hue_float_offset(col, 0.32);
+             else if (seq->type == SEQ_TYPE_ADJUSTMENT)    rgb_byte_set_hue_float_offset(col, 0.40);
+             else if (seq->type == SEQ_TYPE_GAUSSIAN_BLUR) rgb_byte_set_hue_float_offset(col, 0.42);
++            else if (seq->type == SEQ_TYPE_CUSTOMEFFECT)  rgb_byte_set_hue_float_offset(col, 0.52);
+             break;
+ 
+         case SEQ_TYPE_COLOR:
+diff --git a/source/blender/editors/space_sequencer/sequencer_edit.c b/source/blender/editors/space_sequencer/sequencer_edit.c
+index 8ae8994..06ae914 100644
+--- a/source/blender/editors/space_sequencer/sequencer_edit.c
++++ b/source/blender/editors/space_sequencer/sequencer_edit.c
+@@ -71,7 +71,6 @@
+ #include "UI_view2d.h"
+ #include "UI_interface.h"
+ 
+-
+ /* own include */
+ #include "sequencer_intern.h"
+ 
+@@ -95,6 +94,7 @@ EnumPropertyItem sequencer_prop_effect_types[] = {
+     {SEQ_TYPE_ADJUSTMENT, "ADJUSTMENT", 0, "Adjustment Layer", ""},
+     {SEQ_TYPE_GAUSSIAN_BLUR, "GAUSSIAN_BLUR", 0, "Gaussian Blur", ""},
+     {SEQ_TYPE_TEXT, "TEXT", 0, "Text", ""},
++    {SEQ_TYPE_CUSTOMEFFECT, "CUSTOM_EFFECT", 0, "Custom Effect", "Create a strip with customized effect" },
+     {0, NULL, 0, NULL, NULL}
+ };
+ 
+diff --git a/source/blender/makesdna/DNA_sequence_types.h b/source/blender/makesdna/DNA_sequence_types.h
+index 4b44834..52226bf 100644
+--- a/source/blender/makesdna/DNA_sequence_types.h
++++ b/source/blender/makesdna/DNA_sequence_types.h
+@@ -284,6 +284,10 @@ typedef struct TextVars {
+     char pad[5];
+ } TextVars;
+ 
++typedef struct CustomEffectVars {
++    float property;
++} CustomEffectVars;
++
+ /* TextVars.flag */
+ enum {
+     SEQ_TEXT_SHADOW =       (1 << 0),
+@@ -518,8 +522,9 @@ enum {
+     SEQ_TYPE_ADJUSTMENT  = 31,
+     SEQ_TYPE_GAUSSIAN_BLUR = 40,
+     SEQ_TYPE_TEXT = 41,
++    SEQ_TYPE_CUSTOMEFFECT = 42,
+ 
+-    SEQ_TYPE_MAX  = 41
++    SEQ_TYPE_MAX  = 42
+ };
+ 
+ #define SEQ_MOVIECLIP_RENDER_UNDISTORTED (1 << 0)
+diff --git a/source/blender/makesrna/intern/rna_sequencer.c b/source/blender/makesrna/intern/rna_sequencer.c
+index 9b572d9..07e43fd 100644
+--- a/source/blender/makesrna/intern/rna_sequencer.c
++++ b/source/blender/makesrna/intern/rna_sequencer.c
+@@ -550,6 +550,8 @@ static StructRNA *rna_Sequence_refine(struct PointerRNA *ptr)
+             return &RNA_GaussianBlurSequence;
+         case SEQ_TYPE_TEXT:
+             return &RNA_TextSequence;
++        case SEQ_TYPE_CUSTOMEFFECT:
++            return &RNA_CustomEffectSequence;
+         default:
+             return &RNA_Sequence;
+     }
+@@ -1410,6 +1412,7 @@ static void rna_def_sequence(BlenderRNA *brna)
+         {SEQ_TYPE_ADJUSTMENT, "ADJUSTMENT", 0, "Adjustment Layer", ""},
+         {SEQ_TYPE_GAUSSIAN_BLUR, "GAUSSIAN_BLUR", 0, "Gaussian Blur", ""},
+         {SEQ_TYPE_TEXT, "TEXT", 0, "Text", ""},
++        {SEQ_TYPE_CUSTOMEFFECT, "CUSTOM_EFFECT", 0, "Custom Effect", "" },               
+         {0, NULL, 0, NULL, NULL}
+     };
+    
+@@ -2301,6 +2304,17 @@ static void rna_def_speed_control(StructRNA *srna)
+ 
+ }
+ 
++static void rna_def_custom_effect(StructRNA *srna)
++{
++    PropertyRNA *prop;
++
++    RNA_def_struct_sdna_from(srna, "CustomEffectVars", "effectdata");
++    prop = RNA_def_property(srna, "property", PROP_FLOAT, PROP_UNSIGNED);
++    RNA_def_property_ui_text(prop, "One property", "One float prop for practising");
++    RNA_def_property_ui_range(prop, 0.0f, FLT_MAX, 1, -1);
++    RNA_def_property_update(prop, NC_SCENE | ND_SEQUENCER, "rna_Sequence_update");
++}
++
+ static void rna_def_gaussian_blur(StructRNA *srna)
+ {
+     PropertyRNA *prop;
+@@ -2415,6 +2429,8 @@ static EffectInfo def_effects[] = {
+      rna_def_gaussian_blur, 1},
+     {"TextSequence", "Text Sequence", "Sequence strip creating text",
+      rna_def_text, 0},
++    {"CustomEffectSequence", "Custom Effect Sequence", "Sequence strip creating custom effects",
++     rna_def_custom_effect, 1},
+     {"", "", "", NULL, 0}
+ };
+ 
+diff --git a/source/blender/makesrna/intern/rna_sequencer_api.c b/source/blender/makesrna/intern/rna_sequencer_api.c
+index 76f5a49..cc0de3b 100644
+--- a/source/blender/makesrna/intern/rna_sequencer_api.c
++++ b/source/blender/makesrna/intern/rna_sequencer_api.c
+@@ -475,6 +475,7 @@ void RNA_api_sequences(BlenderRNA *brna, PropertyRNA *cprop)
+         {SEQ_TYPE_ADJUSTMENT, "ADJUSTMENT", 0, "Adjustment Layer", ""},
+         {SEQ_TYPE_GAUSSIAN_BLUR, "GAUSSIAN_BLUR", 0, "Gaussian Blur", ""},
+         {SEQ_TYPE_TEXT, "TEXT", 0, "Text", ""},
++        {SEQ_TYPE_CUSTOMEFFECT, "CUSTOM_EFFECT", 0, "Custom Effect", "Create a strip with customized effect" },       
+         {0, NULL, 0, NULL, NULL}
+     };
